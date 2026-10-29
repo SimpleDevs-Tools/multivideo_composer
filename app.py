@@ -66,7 +66,9 @@ def render(job_id, req):
         if fmt not in ('mp4', 'webm', 'mov', 'gif', 'png', 'jpg'): raise ValueError('Unsupported format')
         width, height = even(p.get('width', 1280)), even(p.get('height', 720))
         fps = min(120, max(1, float(p.get('fps', 30))))
-        duration = max(float(c['offset']) + float(c['duration']) for c in clips)
+        natural_duration = max(float(c['offset']) + float(c['duration']) for c in clips)
+        duration = float(p.get('output_duration') or natural_duration)
+        if not (0 < duration <= 86400): raise ValueError('Output duration must be between 0 and 86400 seconds')
         still = fmt in ('png', 'jpg')
         duration = max(duration, 1 / fps)
         cmd = ['ffmpeg', '-hide_banner', '-y', '-loglevel', 'error']
@@ -119,7 +121,7 @@ def render(job_id, req):
         cmd.append(str(EXPORTS / filename))
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode: raise RuntimeError(result.stderr[-3000:])
-        job.update(status='done', url='/exports/' + filename)
+        job.update(status='done', url='/api/download/' + filename, filename=filename)
     except Exception as exc:
         job.update(status='error', error=str(exc))
 
@@ -134,3 +136,11 @@ def start_render(req: RenderRequest):
 def render_status(job_id: str):
     if job_id not in JOBS: raise HTTPException(404, 'Job not found')
     return JOBS[job_id]
+
+@app.get('/api/download/{filename}')
+def download_export(filename: str):
+    if Path(filename).name != filename or not filename.startswith('composition-'):
+        raise HTTPException(400, 'Invalid filename')
+    path = EXPORTS / filename
+    if not path.is_file(): raise HTTPException(404, 'Export not found')
+    return FileResponse(path, filename=filename, media_type='application/octet-stream')
