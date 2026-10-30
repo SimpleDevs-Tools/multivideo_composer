@@ -1,5 +1,7 @@
 from __future__ import annotations
 import json
+import math
+import re
 import mimetypes
 import os
 import shutil
@@ -102,9 +104,11 @@ def render(job_id, req):
             filters.append(f'[{last}][v{source_index}]overlay=x={x}:y={y}:eof_action=pass:enable=\'between(t,{off:.6f},{off+dur:.6f})\'[{output}]')
             last = output
         filters.append(f'[{last}]format=yuv420p[vfinal]' if fmt in ('mp4','mov','webm') else f'[{last}]format=rgb24[vfinal]')
-        # GIF needs palette generation to avoid poor default colors.
+        # Trim within the filtergraph before palette generation. The GIF palette
+        # path buffers frames, so an output-only -t is not sufficient.
         if fmt == 'gif':
-            filters.append('[vfinal]split[gifsrc][palettesrc]')
+            filters.append(f'[vfinal]trim=duration={duration:.6f},setpts=PTS-STARTPTS[giftrim]')
+            filters.append('[giftrim]split[gifsrc][palettesrc]')
             filters.append('[palettesrc]palettegen=stats_mode=diff[palette]')
             filters.append('[gifsrc][palette]paletteuse=dither=bayer[rendered]')
             mapping = '[rendered]'
@@ -115,9 +119,11 @@ def render(job_id, req):
         elif fmt == 'mp4': cmd += ['-c:v', 'libx264', '-crf', '20', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart']
         elif fmt == 'mov': cmd += ['-c:v', 'libx264', '-crf', '20', '-preset', 'veryfast', '-pix_fmt', 'yuv420p']
         elif fmt == 'webm': cmd += ['-c:v', 'libvpx-vp9', '-crf', '32', '-b:v', '0']
-        elif fmt == 'gif': cmd += ['-loop', '0']
+        elif fmt == 'gif': cmd += ['-frames:v', str(max(1, math.ceil(duration * fps - 1e-7))), '-loop', '0']
         if not still: cmd += ['-t', f'{duration:.6f}']
-        filename = f'composition-{job_id[:8]}.{fmt}'
+        project_name = str(p.get('name') or 'composition').strip()
+        safe_name = re.sub(r'[^A-Za-z0-9._-]+', '-', project_name).strip('.-_')[:70] or 'composition'
+        filename = f'{safe_name}-{job_id[:8]}.{fmt}'
         cmd.append(str(EXPORTS / filename))
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode: raise RuntimeError(result.stderr[-3000:])
@@ -139,7 +145,7 @@ def render_status(job_id: str):
 
 @app.get('/api/download/{filename}')
 def download_export(filename: str):
-    if Path(filename).name != filename or not filename.startswith('composition-'):
+    if Path(filename).name != filename or not re.fullmatch(r'[A-Za-z0-9._-]+\.(mp4|mov|webm|gif|png|jpg)', filename):
         raise HTTPException(400, 'Invalid filename')
     path = EXPORTS / filename
     if not path.is_file(): raise HTTPException(404, 'Export not found')
