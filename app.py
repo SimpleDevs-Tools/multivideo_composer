@@ -94,14 +94,18 @@ def render(job_id, req):
             if left + right >= .99 or top + bottom >= .99: raise ValueError('Invalid crop')
             off = float(clip['offset'])
             dur = float(clip['duration'])
-            # Crop source in normalized coordinates; scale cropped content to displayed rectangle.
+            # Scale to the original rectangle first; crop without stretching.
+            crop_w = max(1, int(round(w * (1 - left - right))))
+            crop_h = max(1, int(round(h * (1 - top - bottom))))
+            crop_x = min(w - crop_w, max(0, int(round(w * left))))
+            crop_y = min(h - crop_h, max(0, int(round(h * top))))
             chain = (f'[{source_index}:v]setpts=PTS-STARTPTS,'
-                     f'crop=iw*{1-left-right:.8f}:ih*{1-top-bottom:.8f}:iw*{left:.8f}:ih*{top:.8f},'
                      f'scale={w}:{h}:flags=lanczos,setsar=1,format=rgba,'
+                     f'crop={crop_w}:{crop_h}:{crop_x}:{crop_y},'
                      f'setpts=PTS+{off:.6f}/TB[v{source_index}]')
             filters.append(chain)
             output = f'out{source_index}'
-            filters.append(f'[{last}][v{source_index}]overlay=x={x}:y={y}:eof_action=pass:enable=\'between(t,{off:.6f},{off+dur:.6f})\'[{output}]')
+            filters.append(f"[{last}][v{source_index}]overlay=x={x + crop_x}:y={y + crop_y}:eof_action=pass:enable='between(t,{off:.6f},{off+dur:.6f})'[{output}]")
             last = output
         filters.append(f'[{last}]format=yuv420p[vfinal]' if fmt in ('mp4','mov','webm') else f'[{last}]format=rgb24[vfinal]')
         # Trim within the filtergraph before palette generation. The GIF palette
